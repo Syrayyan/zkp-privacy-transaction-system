@@ -1,0 +1,173 @@
+name: ZKP Project Demo
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:        # allows manual "Run workflow" button on GitHub
+
+jobs:
+  run-demo:
+    name: Run Privacy-Preserving Transaction Demo
+    runs-on: ubuntu-latest
+
+    steps:
+      # ----------------------------------------------------------------
+      # 1. Check out the repository code
+      # ----------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ----------------------------------------------------------------
+      # 2. Set up Python 3.12
+      # ----------------------------------------------------------------
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ----------------------------------------------------------------
+      # 3. Confirm Python version (visible in the Actions log)
+      # ----------------------------------------------------------------
+      - name: Print Python version
+        run: python --version
+
+      # ----------------------------------------------------------------
+      # 4. No dependencies to install — pure standard library project
+      # ----------------------------------------------------------------
+      - name: Confirm no third-party dependencies required
+        run: |
+          echo "Project uses Python standard library only."
+          echo "No pip install needed."
+
+      # ----------------------------------------------------------------
+      # 5. Run the full demo and capture output
+      # ----------------------------------------------------------------
+      - name: Run ZKP demo
+        run: python main.py
+
+      # ----------------------------------------------------------------
+      # 6. Run a quick self-test to verify all modules import cleanly
+      # ----------------------------------------------------------------
+      - name: Verify all modules import without errors
+        run: |
+          python -c "
+          import utils, nullifier, merkle, user, zkp, verifier, blockchain, mixer
+          print('All modules imported successfully.')
+          "
+
+      # ----------------------------------------------------------------
+      # 7. Verify blockchain integrity check passes
+      # ----------------------------------------------------------------
+      - name: Blockchain integrity self-test
+        run: |
+          python -c "
+          from user import create_users
+          from mixer import Mixer
+
+          users = create_users(['Alice', 'Bob', 'Charlie', 'Diana', 'Eve'])
+          m = Mixer()
+          for u in users:
+              m.deposit(u)
+
+          assert m.blockchain.is_valid(), 'Blockchain integrity FAILED'
+          assert m.pool_size() == 5,      'Expected 5 commitments in pool'
+          print(f'Blockchain valid: True')
+          print(f'Pool size: {m.pool_size()} commitments')
+          print('Self-test PASSED.')
+          "
+
+      # ----------------------------------------------------------------
+      # 8. Verify ZKP withdrawals all succeed
+      # ----------------------------------------------------------------
+      - name: ZKP withdrawal self-test
+        run: |
+          python -c "
+          from user import create_users
+          from mixer import Mixer
+
+          users = create_users(['Alice', 'Bob', 'Charlie', 'Diana', 'Eve'])
+          m = Mixer()
+          for u in users:
+              m.deposit(u)
+
+          results = [m.withdraw(u, verbose=False) for u in users]
+          assert all(results), f'Some withdrawals failed: {results}'
+          assert m.nullifiers.count() == 5, 'Expected 5 spent nullifiers'
+          print(f'All {len(results)} withdrawals approved.')
+          print(f'Nullifiers spent: {m.nullifiers.count()}')
+          print('Self-test PASSED.')
+          "
+
+      # ----------------------------------------------------------------
+      # 9. Verify double-spend is rejected
+      # ----------------------------------------------------------------
+      - name: Double-spend prevention self-test
+        run: |
+          python -c "
+          from user import create_users
+          from mixer import Mixer
+
+          users = create_users(['Alice'])
+          m = Mixer()
+          m.deposit(users[0])
+          first  = m.withdraw(users[0], verbose=False)
+          second = m.withdraw(users[0], verbose=False)
+
+          assert first  == True,  'First withdrawal should be approved'
+          assert second == False, 'Second withdrawal should be REJECTED (double-spend)'
+          print('First withdrawal : APPROVED')
+          print('Second withdrawal: REJECTED (correct)')
+          print('Self-test PASSED.')
+          "
+
+      # ----------------------------------------------------------------
+      # 10. Verify forged proof is rejected
+      # ----------------------------------------------------------------
+      - name: Forged proof attack self-test
+        run: |
+          python -c "
+          from user import create_users
+          from mixer import Mixer
+          from zkp import ZKProof, Verifier as ZKVerifier
+
+          users = create_users(['Alice'])
+          m = Mixer()
+          m.deposit(users[0])
+
+          forged = ZKProof(
+              commitment=users[0].commitment,
+              challenge=ZKVerifier.generate_challenge(),
+              response='deadbeef' * 8,
+              nullifier_hash=users[0].nullifier_hash,
+          )
+          result = m.verifier.process_withdrawal(forged, verbose=False)
+          assert result == False, 'Forged proof should be REJECTED'
+          print('Forged proof attack: REJECTED (correct)')
+          print('Self-test PASSED.')
+          "
+
+      # ----------------------------------------------------------------
+      # 11. Verify Merkle membership proofs
+      # ----------------------------------------------------------------
+      - name: Merkle Tree membership proof self-test
+        run: |
+          python -c "
+          from user import create_users
+          from mixer import Mixer
+
+          users = create_users(['Alice', 'Bob', 'Charlie', 'Diana', 'Eve'])
+          m = Mixer()
+          for u in users:
+              m.deposit(u)
+          m._rebuild_merkle()
+
+          for u in users:
+              proof = m.merkle_tree.get_proof(u.commitment)
+              assert proof is not None, f'No proof found for {u.name}'
+              valid = m.merkle_tree.verify_proof(u.commitment, proof)
+              assert valid, f'Merkle proof FAILED for {u.name}'
+              print(f'  {u.name}: Merkle proof VALID')
+          print('All Merkle proofs verified. Self-test PASSED.')
+          "
